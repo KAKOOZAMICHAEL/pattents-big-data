@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+.idea/
+.qodo/
+.dist/
+
+# Large source dumps / generated outputs
+ipg230103.xml
+outputs/
+processed_data/
+
+# Python bytecode/cache
+*.pyc
+*.pyo
+*.pyd
