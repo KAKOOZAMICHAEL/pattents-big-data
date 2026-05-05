@@ -1,117 +1,69 @@
+import pandas as pd
+import json
 import os
 from pathlib import Path
-
-import mysql.connector
-import pandas as pd
-from mysql.connector import Error
-
+from sqlalchemy import create_engine
+import analyze_db
 
 BASE_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = BASE_DIR / "outputs"
 
-
-def run_query_and_export(cursor, query, description, filename_base, output_dir):
-    """Run a query and export its results to CSV and JSON."""
-    cursor.execute(query)
-    results = cursor.fetchall()
-    columns = [column[0] for column in cursor.description]
-
-    if not results:
-        print(f"No results for {description}, skipping export.")
-        return
-
-    df = pd.DataFrame(results, columns=columns)
-    df = df.map(lambda value: value.strip() if isinstance(value, str) else value)
-    df.fillna("N/A", inplace=True)
-
-    csv_file = output_dir / f"{filename_base}.csv"
-    json_file = output_dir / f"{filename_base}.json"
-    df.to_csv(csv_file, index=False)
-    df.to_json(json_file, orient="records", indent=4)
-    print(f"Exported {description} to {csv_file} and {json_file}")
-
-
-def main():
-    """Export analytics from the MySQL patent database."""
+def get_engine():
     host = os.getenv("PATENTS_DB_HOST", "localhost")
     user = os.getenv("PATENTS_DB_USER", "root")
     password = os.getenv("PATENTS_DB_PASSWORD", "")
     db_name = os.getenv("PATENTS_DB_NAME", "patents_db")
-    output_dir = BASE_DIR / "outputs"
-    output_dir.mkdir(exist_ok=True)
+    return create_engine(f"mysql+pymysql://{user}:{password}@{host}/{db_name}")
 
-    queries = [
-        ("SELECT COUNT(*) AS total_patents FROM patents", "Total Patents", "total_patents"),
-        ("SELECT COUNT(*) AS total_inventors FROM inventors", "Total Inventors", "total_inventors"),
-        ("SELECT COUNT(*) AS total_companies FROM companies", "Total Companies", "total_companies"),
-        (
-            "SELECT country, COUNT(*) AS inventor_count FROM inventors GROUP BY country ORDER BY inventor_count DESC",
-            "Inventors per Country",
-            "inventors_per_country",
-        ),
-        (
-            """
-            SELECT c.company_name, COUNT(DISTINCT pc.patent_id) AS patent_count
-            FROM companies c
-            LEFT JOIN patent_companies pc ON c.company_id = pc.company_id
-            GROUP BY c.company_id, c.company_name
-            ORDER BY patent_count DESC, c.company_name
-            LIMIT 10
-            """,
-            "Top 10 Companies",
-            "top_companies",
-        ),
-        (
-            """
-            SELECT YEAR(filing_date) AS year, COUNT(*) AS patent_count
-            FROM patents
-            WHERE filing_date IS NOT NULL
-            GROUP BY YEAR(filing_date)
-            ORDER BY year
-            """,
-            "Patents per Year",
-            "patents_per_year",
-        ),
-        (
-            """
-            SELECT main_classification, COUNT(*) AS patent_count
-            FROM patents
-            WHERE main_classification IS NOT NULL
-            GROUP BY main_classification
-            ORDER BY patent_count DESC, main_classification
-            LIMIT 10
-            """,
-            "Top Classifications",
-            "top_classifications",
-        ),
-        (
-            """
-            SELECT ROUND(AVG(inventor_count), 2) AS avg_inventors_per_patent
-            FROM (
-                SELECT patent_id, COUNT(*) AS inventor_count
-                FROM patent_inventors
-                GROUP BY patent_id
-            ) AS inventor_counts
-            """,
-            "Average Inventors per Patent",
-            "avg_inventors_per_patent",
-        ),
-    ]
-
+def export_reports():
+    print("Starting report generation...")
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    engine = get_engine()
+    
     try:
-        connection = mysql.connector.connect(host=host, user=user, password=password, database=db_name)
-        cursor = connection.cursor()
-
-        for query, description, filename in queries:
-            run_query_and_export(cursor, query, description, filename, output_dir)
-
-        print("\nAll exports completed. Files are ready for downstream analysis.")
-    except Error as error:
-        print(f"Error connecting to database: {error}")
-    finally:
-        if "connection" in locals() and connection.is_connected():
-            cursor.close()
-            connection.close()
-
+        # 1. Top Inventors
+        print("Exporting top inventors...")
+        inv_df = analyze_db.get_top_inventors_global_ranking(engine)
+        inv_df.to_csv(OUTPUT_DIR / "top_inventors.csv", index=False)
+        
+        # 2. Top Companies
+        print("Exporting top companies...")
+        comp_df = analyze_db.get_top_companies_market_share(engine)
+        comp_df.to_csv(OUTPUT_DIR / "top_companies.csv", index=False)
+        
+        # 3. Country Trends
+        print("Exporting country trends...")
+        trends_df = analyze_db.get_top_countries_by_patent_output(engine)
+        trends_df.to_csv(OUTPUT_DIR / "country_trends.csv", index=False)
+        
+        # 4. Patent Forecasts (Prophet)
+        print("Exporting patent forecasts...")
+        _, forecast_df = analyze_db.predict_patent_volume_forecasting(engine)
+        forecast_data = forecast_df.to_dict(orient="records") if not forecast_df.empty else []
+        with open(OUTPUT_DIR / "patent_forecasts.json", "w") as f:
+            json.dump(forecast_data, f, indent=4)
+            
+        # 5. Technology Clusters (K-Means)
+        print("Exporting technology clusters...")
+        clusters_df = analyze_db.cluster_country_innovation_trajectory(engine)
+        clusters_df.to_csv(OUTPUT_DIR / "technology_clusters.csv", index=False)
+        
+        # 6. Full JSON Report Summary
+        print("Generating full JSON summary...")
+        summary = {
+            "status": "success",
+            "top_inventors_count": len(inv_df),
+            "top_companies_count": len(comp_df),
+            "forecast_years_predicted": len(forecast_df),
+            "clusters_generated": len(clusters_df['cluster'].unique()) if not clusters_df.empty else 0,
+            "message": "Pipeline phase 4 reports successfully generated."
+        }
+        with open(OUTPUT_DIR / "report_summary.json", "w") as f:
+            json.dump(summary, f, indent=4)
+            
+        print("Reports successfully exported to outputs/ directory.")
+    except Exception as e:
+        print(f"Error during report export: {e}")
 
 if __name__ == "__main__":
-    main()
+    export_reports()

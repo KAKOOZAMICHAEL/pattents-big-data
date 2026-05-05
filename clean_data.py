@@ -1,141 +1,123 @@
-import json
-from pathlib import Path
-
 import pandas as pd
-
+from pathlib import Path
+import re
 
 BASE_DIR = Path(__file__).resolve().parent
 
+def clean_company_name(name):
+    if pd.isna(name) or name == "":
+        return "Unknown Company"
+    name = str(name).strip()
+    name = re.sub(r'(?i)\b(ltd\.?|inc\.?|corp\.?|corporation|llc\.?|limited)\b', '', name)
+    name = " ".join(name.split())
+    return name if name else "Unknown Company"
 
-def load_data(json_file):
-    """Load the extracted JSON data."""
-    with Path(json_file).open("r", encoding="utf-8") as file_handle:
-        return json.load(file_handle)
-
-
-def normalize_country(country):
-    """Normalize country values for consistent analytics."""
-    if pd.isna(country) or country in {"N/A", "", None}:
+def standardize_country(code):
+    if pd.isna(code) or code == "":
         return "Unknown"
+    code = str(code).strip().upper()
+    if code in ["US", "U.S.", "USA", "UNITED STATES"]:
+        return "US"
+    return code
 
-    normalized = " ".join(str(country).split()).upper()
-    aliases = {
-        "US": "USA",
-        "U.S.": "USA",
-        "UNITED STATES": "USA",
-        "UNITED STATES OF AMERICA": "USA",
-        "UNKNOWN": "Unknown",
-    }
-    return aliases.get(normalized, normalized)
+def main():
+    print("Starting data cleaning...")
+    in_dir = BASE_DIR / "extracted"
+    out_dir = BASE_DIR
+    
+    chunk_size = 100000
 
+    # 1. Patents & CPC
+    print("Extracting CPC for patents...")
+    cpc_map = {}
+    if (in_dir / "ext_cpc.csv").exists():
+        for chunk in pd.read_csv(in_dir / "ext_cpc.csv", chunksize=chunk_size, dtype=str):
+            chunk = chunk.dropna(subset=['patent_id', 'cpc_section'])
+            chunk = chunk.drop_duplicates(subset=['patent_id'])
+            for _, row in chunk.iterrows():
+                if row['patent_id'] not in cpc_map:
+                    cpc_map[row['patent_id']] = row['cpc_section']
 
-def clean_text(text, default="N/A"):
-    """Collapse whitespace without changing the original casing."""
-    if pd.isna(text) or text in {"", None}:
-        return default
+    print("Cleaning patents...")
+    first = True
+    if (in_dir / "ext_patents.csv").exists():
+        for chunk in pd.read_csv(in_dir / "ext_patents.csv", chunksize=chunk_size, dtype=str):
+            df = pd.DataFrame()
+            df['patent_id'] = chunk['patent_id']
+            df['title'] = chunk['patent_title'].fillna("Unknown Title").str.strip()
+            df['description'] = "" 
+            df['filing_date'] = pd.to_datetime(chunk['patent_date'], errors='coerce').dt.strftime('%Y-%m-%d')
+            df['publication_date'] = df['filing_date']
+            df['main_classification'] = ""
+            df['locarno_classification'] = ""
+            df['cpc_section'] = df['patent_id'].map(cpc_map).fillna('')
+            
+            df = df.drop_duplicates(subset=['patent_id'])
+            df.to_csv(out_dir / "patents.csv", index=False, mode='w' if first else 'a', header=first)
+            first = False
 
-    normalized = " ".join(str(text).split())
-    return normalized if normalized else default
+    # 2. Inventors & Patent-Inventors
+    print("Cleaning inventors...")
+    inventors_seen = set()
+    first_inv = True
+    first_pi = True
+    if (in_dir / "ext_inventors.csv").exists():
+        for chunk in pd.read_csv(in_dir / "ext_inventors.csv", chunksize=chunk_size, dtype=str):
+            chunk['first'] = chunk['disambig_inventor_name_first'].fillna("")
+            chunk['last'] = chunk['disambig_inventor_name_last'].fillna("")
+            chunk['full_name'] = (chunk['first'] + " " + chunk['last']).str.strip()
+            chunk.loc[chunk['full_name'] == "", 'full_name'] = "Unknown Inventor"
+            
+            chunk['inventor_id'] = chunk['inventor_id'].fillna("unknown_inv")
+            chunk['country'] = chunk['location_id'].apply(standardize_country)
+            
+            inv = chunk[['inventor_id', 'full_name', 'country']].drop_duplicates(subset=['inventor_id'])
+            inv_new = inv[~inv['inventor_id'].isin(inventors_seen)]
+            if not inv_new.empty:
+                inventors_seen.update(inv_new['inventor_id'])
+                inv_new.to_csv(out_dir / "inventors.csv", index=False, mode='w' if first_inv else 'a', header=first_inv)
+                first_inv = False
+                
+            pi = chunk[['patent_id', 'inventor_id']].dropna().drop_duplicates()
+            pi.to_csv(out_dir / "patent_inventors.csv", index=False, mode='w' if first_pi else 'a', header=first_pi)
+            first_pi = False
 
+    # 3. Companies & Patent-Companies
+    print("Cleaning companies...")
+    companies_seen = set()
+    first_comp = True
+    first_pc = True
+    if (in_dir / "ext_assignees.csv").exists():
+        for chunk in pd.read_csv(in_dir / "ext_assignees.csv", chunksize=chunk_size, dtype=str):
+            chunk['company_name'] = chunk['disambig_assignee_organization'].fillna("")
+            mask = chunk['company_name'] == ""
+            chunk.loc[mask, 'company_name'] = (chunk.loc[mask, 'disambig_assignee_individual_name_first'].fillna("") + " " + chunk.loc[mask, 'disambig_assignee_individual_name_last'].fillna("")).str.strip()
+            
+            chunk['company_name'] = chunk['company_name'].apply(clean_company_name)
+            chunk['company_id'] = chunk['assignee_id'].fillna("unknown_comp")
+            
+            comp = chunk[['company_id', 'company_name']].drop_duplicates(subset=['company_id'])
+            comp_new = comp[~comp['company_id'].isin(companies_seen)]
+            if not comp_new.empty:
+                companies_seen.update(comp_new['company_id'])
+                comp_new.to_csv(out_dir / "companies.csv", index=False, mode='w' if first_comp else 'a', header=first_comp)
+                first_comp = False
+                
+            pc = chunk[['patent_id', 'company_id']].dropna().drop_duplicates()
+            pc.to_csv(out_dir / "patent_companies.csv", index=False, mode='w' if first_pc else 'a', header=first_pc)
+            first_pc = False
 
-def normalize_patents(data):
-    """Normalize extracted patent data into relational tables."""
-    patents_list = []
-    all_inventors = []
-    all_companies = []
-    patent_inventors = []
-    patent_companies = []
+    # 4. Abstracts
+    print("Cleaning abstracts...")
+    first_abs = True
+    if (in_dir / "ext_abstracts.csv").exists():
+        for chunk in pd.read_csv(in_dir / "ext_abstracts.csv", chunksize=chunk_size, dtype=str):
+            chunk['abstract_text'] = chunk['patent_abstract'].fillna("").str.strip()
+            ab = chunk[['patent_id', 'abstract_text']].dropna().drop_duplicates(subset=['patent_id'])
+            ab.to_csv(out_dir / "g_abstract.csv", index=False, mode='w' if first_abs else 'a', header=first_abs)
+            first_abs = False
 
-    for patent in data:
-        patent_id = clean_text(patent.get("patent_id"))
-        patents_list.append(
-            {
-                "patent_id": patent_id,
-                "title": clean_text(patent.get("title")),
-                "description": clean_text(patent.get("description")),
-                "filing_date": clean_text(patent.get("filing_date")),
-                "publication_date": clean_text(patent.get("publication_date")),
-                "main_classification": clean_text(patent.get("main_classification")),
-                "locarno_classification": clean_text(patent.get("locarno_classification")),
-            }
-        )
-
-        for inventor in patent.get("inventors", []):
-            inventor_row = {
-                "full_name": clean_text(inventor.get("full_name"), default="Unknown Inventor"),
-                "country": normalize_country(inventor.get("country")),
-            }
-            all_inventors.append(inventor_row)
-            patent_inventors.append({"patent_id": patent_id, **inventor_row})
-
-        for company in patent.get("assignees", []):
-            company_row = {
-                "company_name": clean_text(company.get("company_name"), default="Unknown Company"),
-            }
-            all_companies.append(company_row)
-            patent_companies.append({"patent_id": patent_id, **company_row})
-
-    patents_df = pd.DataFrame(patents_list).drop_duplicates(subset=["patent_id"])
-    patents_df = patents_df.sort_values("patent_id").reset_index(drop=True)
-
-    inventors_df = pd.DataFrame(all_inventors).drop_duplicates() if all_inventors else pd.DataFrame(columns=["full_name", "country"])
-    inventors_df = inventors_df.sort_values(["full_name", "country"]).reset_index(drop=True)
-    inventors_df["inventor_id"] = range(1, len(inventors_df) + 1)
-
-    companies_df = pd.DataFrame(all_companies).drop_duplicates() if all_companies else pd.DataFrame(columns=["company_name"])
-    companies_df = companies_df.sort_values(["company_name"]).reset_index(drop=True)
-    companies_df["company_id"] = range(1, len(companies_df) + 1)
-
-    if patent_inventors:
-        patent_inventors_df = pd.DataFrame(patent_inventors).drop_duplicates()
-        patent_inventors_df = patent_inventors_df.merge(
-            inventors_df[["full_name", "country", "inventor_id"]],
-            on=["full_name", "country"],
-            how="left",
-        )
-        patent_inventors_df = patent_inventors_df[["patent_id", "inventor_id"]].dropna().drop_duplicates()
-        patent_inventors_df["inventor_id"] = patent_inventors_df["inventor_id"].astype(int)
-        patent_inventors_df = patent_inventors_df.sort_values(["patent_id", "inventor_id"]).reset_index(drop=True)
-    else:
-        patent_inventors_df = pd.DataFrame(columns=["patent_id", "inventor_id"])
-
-    if patent_companies:
-        patent_companies_df = pd.DataFrame(patent_companies).drop_duplicates()
-        patent_companies_df = patent_companies_df.merge(
-            companies_df[["company_name", "company_id"]],
-            on="company_name",
-            how="left",
-        )
-        patent_companies_df = patent_companies_df[["patent_id", "company_id"]].dropna().drop_duplicates()
-        patent_companies_df["company_id"] = patent_companies_df["company_id"].astype(int)
-        patent_companies_df = patent_companies_df.sort_values(["patent_id", "company_id"]).reset_index(drop=True)
-    else:
-        patent_companies_df = pd.DataFrame(columns=["patent_id", "company_id"])
-
-    return patents_df, inventors_df, companies_df, patent_inventors_df, patent_companies_df
-
-
-def main(json_path=None, output_dir=None):
-    """Clean extracted patent data and emit normalized CSV tables."""
-    json_path = Path(json_path) if json_path else BASE_DIR / "patents_data.json"
-    output_dir = Path(output_dir) if output_dir else BASE_DIR
-
-    data = load_data(json_path)
-    patents_df, inventors_df, companies_df, patent_inventors_df, patent_companies_df = normalize_patents(data)
-
-    patents_df.to_csv(output_dir / "patents.csv", index=False)
-    inventors_df.to_csv(output_dir / "inventors.csv", index=False)
-    companies_df.to_csv(output_dir / "companies.csv", index=False)
-    patent_inventors_df.to_csv(output_dir / "patent_inventors.csv", index=False)
-    patent_companies_df.to_csv(output_dir / "patent_companies.csv", index=False)
-
-    print("Clean datasets saved:")
-    print("- patents.csv")
-    print("- inventors.csv")
-    print("- companies.csv")
-    print("- patent_inventors.csv")
-    print("- patent_companies.csv")
-
+    print("Cleaning complete.")
 
 if __name__ == "__main__":
     main()

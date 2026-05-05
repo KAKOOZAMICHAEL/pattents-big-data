@@ -8,6 +8,15 @@ __pycache__/
 ipg230103.xml
 outputs/
 processed_data/
+extracted/
+
+# Ignored data files
+*.tsv
+*.csv
+*.json
+*.xml
+*.zip
+g_*/
 
 # Python bytecode/cache
 *.pyc
