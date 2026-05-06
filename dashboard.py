@@ -6,6 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import random
 import time
+from sqlalchemy import create_engine
 
 st.set_page_config(page_title="Patent Intelligence Dashboard", layout="wide", initial_sidebar_state="expanded")
 
@@ -18,6 +19,108 @@ def get_connection():
         return None
 
 conn = get_connection()
+ENGINE_URL = str(conn.url) if conn else None
+
+@st.cache_data(ttl=600)
+def load_patent_volume(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_patent_volume_over_time(engine)
+
+@st.cache_data(ttl=600)
+def load_technology_breakdown(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_technology_category_breakdown(engine)
+
+@st.cache_data(ttl=600)
+def load_top_countries(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_top_countries_by_patent_output(engine)
+
+@st.cache_data(ttl=600)
+def load_top_companies(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_top_companies_market_share(engine)
+
+@st.cache_data(ttl=600)
+def load_top_inventors(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_top_inventors_global_ranking(engine)
+
+@st.cache_data(ttl=600)
+def load_heatmap(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_country_vs_technology_heatmap(engine)
+
+@st.cache_data(ttl=600)
+def load_patent_lifecycle(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_patent_lifecycle_analysis(engine)
+
+@st.cache_data(ttl=600)
+def load_collaboration(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_inventor_collaboration_network(engine)
+
+@st.cache_data(ttl=600)
+def load_nlp_trends(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_abstract_nlp_keyword_trends(engine)
+
+@st.cache_data(ttl=600)
+def load_superimposed(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_company_vs_country_superimposed_trends(engine)
+
+@st.cache_data(ttl=600)
+def load_gdp_correlation(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_gdp_vs_patent_output_correlation(engine)
+
+@st.cache_data(ttl=600)
+def load_rd_spending(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_rd_spending_vs_innovation_output(engine)
+
+@st.cache_data(ttl=600)
+def load_university_comparison(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_university_vs_corporate_patent_comparison(engine)
+
+@st.cache_data(ttl=600)
+def load_green_technology(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.get_green_technology_patent_surge(engine)
+
+@st.cache_data(ttl=600)
+def load_forecast(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.predict_patent_volume_forecasting(engine)
+
+@st.cache_data(ttl=600)
+def load_growth_prediction(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.predict_technology_sector_growth(engine)
+
+@st.cache_data(ttl=600)
+def load_cluster(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.cluster_country_innovation_trajectory(engine)
+
+@st.cache_data(ttl=600)
+def load_classification(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.classify_abstract_distilbert(engine)
+
+@st.cache_data(ttl=600)
+def load_citations(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.predict_patent_citation_impact(engine)
+
+@st.cache_data(ttl=600)
+@st.cache_data(ttl=600)
+def load_anomalies(engine_url):
+    engine = create_engine(engine_url)
+    return analyze_db.detect_anomalies_patent_surge(engine)
 
 if not conn:
     st.warning("Database connection is not available. Please ensure MySQL is running.")
@@ -73,7 +176,7 @@ with tabs[0]:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("1. Patent Volume Over Time")
-        annual, monthly = analyze_db.get_patent_volume_over_time(conn)
+        annual, monthly = load_patent_volume(ENGINE_URL)
         annual = apply_filters(annual)
         if not annual.empty:
             fig1 = go.Figure()
@@ -84,16 +187,16 @@ with tabs[0]:
             
     with c2:
         st.subheader("2. Technology Category Breakdown")
-        tech = analyze_db.get_technology_category_breakdown(conn)
+        tech = load_technology_breakdown(ENGINE_URL)
         tech = apply_filters(tech)
         if not tech.empty:
-            fig2 = px.bar(tech.sort_values('year'), x="cpc_section", y="count", color="cpc_section", 
-                          animation_frame="year", range_y=[0, tech['count'].max()*1.1],
-                          title="Animated CPC Section Distribution (Bar Chart Race)")
+            tech = tech.sort_values(['year', 'cpc_section'])
+            fig2 = px.line(tech, x="year", y="count", color="cpc_section", title="Technology Category Breakdown")
+            fig2.update_layout(legend_title_text='CPC Section')
             st.plotly_chart(fig2, use_container_width=True)
 
     st.subheader("3. Top 20 Countries by Patent Output")
-    countries = analyze_db.get_top_countries_by_patent_output(conn)
+    countries = load_top_countries(ENGINE_URL)
     countries = apply_filters(countries)
     if not countries.empty:
         agg_countries = countries.groupby('country')['count'].sum().reset_index()
@@ -104,13 +207,13 @@ with tabs[0]:
     c3, c4 = st.columns(2)
     with c3:
         st.subheader("4. Top 50 Companies Market Share")
-        comps = analyze_db.get_top_companies_market_share(conn)
+        comps = load_top_companies(ENGINE_URL)
         if not comps.empty:
             st.dataframe(comps.head(50), use_container_width=True)
             
     with c4:
         st.subheader("5. Top Inventors Global Ranking")
-        invs = analyze_db.get_top_inventors_global_ranking(conn)
+        invs = load_top_inventors(ENGINE_URL)
         if not invs.empty:
             st.dataframe(invs.head(50), use_container_width=True)
 
@@ -121,7 +224,7 @@ with tabs[1]:
     st.header("Diagnostic Analytics (Why It Happened)")
     
     st.subheader("6. Country vs Technology Heatmap")
-    heatmap = analyze_db.get_country_vs_technology_heatmap(conn)
+    heatmap = load_heatmap(ENGINE_URL)
     if not heatmap.empty:
         fig = px.imshow(heatmap, text_auto=True, title="Country Dominance by Tech Sector", aspect="auto")
         st.plotly_chart(fig, use_container_width=True)
@@ -129,7 +232,7 @@ with tabs[1]:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("7. Patent Lifecycle Analysis")
-        lifecycle = analyze_db.get_patent_lifecycle_analysis(conn)
+        lifecycle = load_patent_lifecycle(ENGINE_URL)
         lifecycle = apply_filters(lifecycle)
         if not lifecycle.empty:
             fig = px.bar(lifecycle, x="cpc_section", y="grant_delay_months", color="country", barmode='group', title="Avg Grant Delay by CPC and Country")
@@ -137,13 +240,13 @@ with tabs[1]:
             
     with c2:
         st.subheader("9. Inventor Collaboration Network")
-        G, edges = analyze_db.get_inventor_collaboration_network(conn)
+        G, edges = load_collaboration(ENGINE_URL)
         if not edges.empty:
             st.info(f"Network features {len(G.nodes)} nodes and {len(G.edges)} edges.")
             st.dataframe(edges.head(100), use_container_width=True)
 
     st.subheader("10. Abstract NLP - Technology Keyword Trends")
-    nlp = analyze_db.get_abstract_nlp_keyword_trends(conn)
+    nlp = load_nlp_trends(ENGINE_URL)
     nlp = apply_filters(nlp)
     if not nlp.empty:
         fig = px.area(nlp, x="year", y="score", color="keyword", title="Keyword TF-IDF Trend (Streamgraph)")
@@ -156,7 +259,7 @@ with tabs[2]:
     st.header("Comparative & Superimposed Trends")
     
     st.subheader("8. Company vs Country Superimposed Trends")
-    superimposed = analyze_db.get_company_vs_country_superimposed_trends(conn)
+    superimposed = load_superimposed(ENGINE_URL)
     if not superimposed.empty:
         sup_filtered = superimposed[(superimposed.index >= year_range[0]) & (superimposed.index <= year_range[1])]
         fig = px.line(sup_filtered.reset_index(), x='year', y=sup_filtered.columns, title="US vs China Output Over Time")
@@ -166,7 +269,7 @@ with tabs[2]:
         st.info("**AI Insight:** The 2008 financial crisis caused a temporary dip in US patent filings, allowing Chinese entities to close the gap rapidly. The COVID-19 pandemic introduced volatility, but filings stabilized post-2021.")
 
     st.subheader("11. GDP vs Patent Output Correlation")
-    gdp = analyze_db.get_gdp_vs_patent_output_correlation(conn)
+    gdp = load_gdp_correlation(ENGINE_URL)
     gdp = apply_filters(gdp)
     if not gdp.empty:
         fig = px.scatter(gdp, x="gdp_trillions", y="count", text="country", size="count", color="country", title="GDP vs Patents")
@@ -174,7 +277,7 @@ with tabs[2]:
         st.info("**AI Insight:** There is a strong R² correlation (~0.85) between a nation's GDP and its patent output. However, countries like KR (South Korea) punch significantly above their economic weight, reflecting highly concentrated tech sector R&D.")
 
     st.subheader("12. R&D Spending vs Innovation")
-    rd = analyze_db.get_rd_spending_vs_innovation_output(conn)
+    rd = load_rd_spending(ENGINE_URL)
     rd = apply_filters(rd)
     if not rd.empty:
         fig = go.Figure()
@@ -185,7 +288,7 @@ with tabs[2]:
         st.info("**AI Insight:** Increased R&D spending as a percentage of GDP acts as a leading indicator for patent filings, typically preceding a surge in patent volume by 2-3 years.")
 
     st.subheader("13. University vs Corporate Comparison")
-    uni = analyze_db.get_university_vs_corporate_patent_comparison(conn)
+    uni = load_university_comparison(ENGINE_URL)
     uni = apply_filters(uni)
     if not uni.empty:
         fig = px.line(uni, x="year", y="count", color="type", title="Assignee Type Trends")
@@ -194,7 +297,7 @@ with tabs[2]:
         st.info("**AI Insight:** University patent filings surged post-2010 due to increased technology transfer policies and targeted government grants focusing on the commercialization of academic research.")
 
     st.subheader("14. Green Technology Patent Surge")
-    green = analyze_db.get_green_technology_patent_surge(conn)
+    green = load_green_technology(ENGINE_URL)
     green = apply_filters(green)
     if not green.empty:
         fig = go.Figure()
@@ -212,7 +315,7 @@ with tabs[3]:
     st.header("Predictive Analytics (What Will Happen)")
     
     st.subheader("15. Patent Volume Forecasting")
-    annual, future = analyze_db.predict_patent_volume_forecasting(conn)
+    annual, future = load_forecast(ENGINE_URL)
     if not future.empty:
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=annual['year'], y=annual['count'], mode='lines', name='Historical'))
@@ -224,13 +327,13 @@ with tabs[3]:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("16. Technology Sector Growth Prediction")
-        growth = analyze_db.predict_technology_sector_growth(conn)
+        growth = load_growth_prediction(ENGINE_URL)
         if not growth.empty:
             st.dataframe(growth, use_container_width=True)
             
     with c2:
         st.subheader("17. Country Trajectory Clustering")
-        clusters = analyze_db.cluster_country_innovation_trajectory(conn)
+        clusters = load_cluster(ENGINE_URL)
         if not clusters.empty:
             fig = px.scatter(clusters, x="volume", y="growth", color="cluster_name", text="country", size="volume", title="K-Means Clustering of Country Trajectories")
             st.plotly_chart(fig, use_container_width=True)
@@ -244,20 +347,20 @@ with tabs[4]:
     c1, c2 = st.columns([1, 1])
     with c1:
         st.subheader("18. Abstract Text Classification (DistilBERT)")
-        cm, acc = analyze_db.classify_abstract_distilbert(conn)
+        cm, acc = load_classification(ENGINE_URL)
         if not cm.empty:
             st.success(f"**Model Accuracy:** {acc*100:.1f}%")
             fig = px.imshow(cm, text_auto=True, title="Confusion Matrix (Predicted vs Actual CPC)", aspect="auto")
             st.plotly_chart(fig, use_container_width=True)
             
         st.subheader("19. Citation Impact Prediction (LSTM)")
-        citations = analyze_db.predict_patent_citation_impact(conn)
+        citations = load_citations(ENGINE_URL)
         if not citations.empty:
             st.dataframe(citations.head(10), use_container_width=True)
             
     with c2:
         st.subheader("20. Anomaly Detection (Autoencoder)")
-        monthly = analyze_db.detect_anomalies_patent_surge(conn)
+        monthly = load_anomalies(ENGINE_URL)
         if not monthly.empty:
             fig = px.line(monthly, x="month", y="count", title="Monthly Filings with Anomalies Flagged")
             anomalies = monthly[monthly['is_anomaly']]
