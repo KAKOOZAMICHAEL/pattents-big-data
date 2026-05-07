@@ -36,7 +36,7 @@ def export_reports():
         trends_df = analyze_db.get_top_countries_by_patent_output(engine)
         trends_df.to_csv(OUTPUT_DIR / "country_trends.csv", index=False)
         
-        # 4. Patent Forecasts (Prophet)
+        # 4. Patent Forecasts (LinearRegression)
         print("Exporting patent forecasts...")
         _, forecast_df = analyze_db.predict_patent_volume_forecasting(engine)
         forecast_data = forecast_df.to_dict(orient="records") if not forecast_df.empty else []

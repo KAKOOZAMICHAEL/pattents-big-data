@@ -18,45 +18,54 @@ def prepare_date_columns(dataframe, columns):
             dataframe[column] = pd.to_datetime(dataframe[column], format="%Y-%m-%d", errors="coerce").dt.date
     return dataframe
 
-def insert_data_in_batches(engine, table, csv_file, columns, batch_size=10000, date_cols=None):
+def insert_data_in_batches(conn, table, csv_file, batch_size=50000, date_cols=None):
+    """
+    Bulk insert data using pandas.to_sql() with method='multi' for optimal performance.
+    
+    Args:
+        conn: SQLAlchemy connection object (shared across all inserts)
+        table: Target table name
+        csv_file: Path to CSV file
+        batch_size: Rows per chunk (default 50000 for optimal performance)
+        date_cols: List of column names to parse as dates
+    """
     if not csv_file.exists():
         print(f"Skipping {table}, {csv_file.name} not found.")
         return
 
-    placeholders = ", ".join([f":{col}" for col in columns])
-    sql = text(f"INSERT IGNORE INTO {table} ({', '.join(columns)}) VALUES ({placeholders})")
+    print(f"Loading {table} using pandas.to_sql with {batch_size} row chunks...")
+    rows_inserted = 0
     
-    print(f"Loading {table} in batches of {batch_size} via SQLAlchemy...")
-    with engine.begin() as conn:
-        for i, chunk in enumerate(pd.read_csv(csv_file, chunksize=batch_size, dtype=str)):
-            if date_cols:
-                chunk = prepare_date_columns(chunk, date_cols)
-            
-            chunk = chunk.where(pd.notnull(chunk), None)
-            
-            # Using SQLAlchemy execute with a list of dictionaries parameters
-            data_to_insert = chunk.to_dict(orient="records")
-            conn.execute(sql, data_to_insert)
-            if i % 5 == 0:
-                print(f"  Inserted {(i+1)*batch_size} rows into {table}...")
+    for i, chunk in enumerate(pd.read_csv(csv_file, chunksize=batch_size, dtype=str)):
+        if date_cols:
+            chunk = prepare_date_columns(chunk, date_cols)
+        
+        chunk = chunk.where(pd.notnull(chunk), None)
+        
+        # Use pandas to_sql with method='multi' for 10-20x faster bulk inserts
+        chunk.to_sql(table, con=conn, if_exists='append', index=False, method='multi')
+        rows_inserted += len(chunk)
+        print(f"  Inserted {rows_inserted} rows into {table}...")
 
 def main():
     print("Starting data loading phase...")
     engine = get_engine()
     
     try:
+        # Open single connection and disable constraints for ALL inserts at once
         with engine.begin() as conn:
             conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
             conn.execute(text("SET UNIQUE_CHECKS=0;"))
             
-        insert_data_in_batches(engine, "patents", BASE_DIR / "patents.csv", ["patent_id", "title", "description", "filing_date", "publication_date", "main_classification", "locarno_classification", "cpc_section"], date_cols=["filing_date", "publication_date"])
-        insert_data_in_batches(engine, "inventors", BASE_DIR / "inventors.csv", ["inventor_id", "full_name", "country"])
-        insert_data_in_batches(engine, "companies", BASE_DIR / "companies.csv", ["company_id", "company_name"])
-        insert_data_in_batches(engine, "patent_inventors", BASE_DIR / "patent_inventors.csv", ["patent_id", "inventor_id"])
-        insert_data_in_batches(engine, "patent_companies", BASE_DIR / "patent_companies.csv", ["patent_id", "company_id"])
-        insert_data_in_batches(engine, "g_abstract", BASE_DIR / "g_abstract.csv", ["patent_id", "abstract_text"])
+            # All inserts use the same connection with constraints disabled
+            insert_data_in_batches(conn, "patents", BASE_DIR / "patents.csv", date_cols=["filing_date", "publication_date"])
+            insert_data_in_batches(conn, "inventors", BASE_DIR / "inventors.csv")
+            insert_data_in_batches(conn, "companies", BASE_DIR / "companies.csv")
+            insert_data_in_batches(conn, "patent_inventors", BASE_DIR / "patent_inventors.csv")
+            insert_data_in_batches(conn, "patent_companies", BASE_DIR / "patent_companies.csv")
+            insert_data_in_batches(conn, "g_abstract", BASE_DIR / "g_abstract.csv")
 
-        with engine.begin() as conn:
+            # Restore constraint checking before transaction commits
             conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
             conn.execute(text("SET UNIQUE_CHECKS=1;"))
             

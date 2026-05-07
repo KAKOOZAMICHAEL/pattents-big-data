@@ -3,6 +3,10 @@
 -- Global Patent Intelligence Data Pipeline
 -- ============================================================
 
+-- Performance settings for bulk inserts
+SET innodb_buffer_pool_size = 1G;
+SET bulk_insert_buffer_size = 256M;
+
 CREATE DATABASE IF NOT EXISTS patents_db;
 USE patents_db;
 
@@ -22,6 +26,7 @@ CREATE TABLE IF NOT EXISTS patents (
 
 CREATE INDEX IF NOT EXISTS idx_patents_filing_date ON patents (filing_date);
 CREATE INDEX IF NOT EXISTS idx_patents_cpc_section ON patents (cpc_section);
+CREATE INDEX IF NOT EXISTS idx_patents_filing_cpc ON patents (filing_date, cpc_section);
 CREATE INDEX IF NOT EXISTS idx_patents_id ON patents (patent_id);
 
 -- ------------------------------------------------------------
@@ -43,6 +48,8 @@ CREATE TABLE IF NOT EXISTS companies (
     company_name VARCHAR(500) NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_companies_name ON companies (company_name);
+
 -- ------------------------------------------------------------
 -- 4. patent_inventors  (many-to-many link)
 -- ------------------------------------------------------------
@@ -53,6 +60,8 @@ CREATE TABLE IF NOT EXISTS patent_inventors (
     FOREIGN KEY (patent_id)   REFERENCES patents   (patent_id)   ON DELETE CASCADE,
     FOREIGN KEY (inventor_id) REFERENCES inventors (inventor_id) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_patent_inventors_inv_pat ON patent_inventors (inventor_id, patent_id);
 
 -- ------------------------------------------------------------
 -- 5. patent_companies  (many-to-many link)
@@ -65,6 +74,8 @@ CREATE TABLE IF NOT EXISTS patent_companies (
     FOREIGN KEY (company_id) REFERENCES companies (company_id) ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_patent_companies_comp_pat ON patent_companies (company_id, patent_id);
+
 -- ------------------------------------------------------------
 -- 6. g_abstract
 -- ------------------------------------------------------------
@@ -73,3 +84,5 @@ CREATE TABLE IF NOT EXISTS g_abstract (
     abstract_text LONGTEXT,
     FOREIGN KEY (patent_id) REFERENCES patents (patent_id) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_g_abstract_patent_id ON g_abstract (patent_id);

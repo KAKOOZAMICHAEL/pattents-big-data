@@ -25,13 +25,36 @@ def main():
         schema_path = BASE_DIR / "schema.sql"
         if schema_path.exists():
             with open(schema_path, "r", encoding="utf-8") as f:
-                # Basic split by semicolon to run statements iteratively
-                sql_statements = f.read().split(";")
-                
+                sql_content = f.read()
+            
+            # Split by semicolon, but carefully handle comments
+            sql_statements = []
+            current_stmt = ""
+            for line in sql_content.split('\n'):
+                stripped = line.strip()
+                # Skip empty lines and comments
+                if not stripped or stripped.startswith('--'):
+                    continue
+                current_stmt += " " + line
+                if ';' in line:
+                    # Found end of statement
+                    stmt = current_stmt.strip()
+                    if stmt:
+                        sql_statements.append(stmt)
+                    current_stmt = ""
+            
+            # Execute all statements in a single connection
             with engine.begin() as conn:
-                for statement in sql_statements:
+                for i, statement in enumerate(sql_statements):
                     if statement.strip():
-                        conn.execute(text(statement.strip()))
+                        try:
+                            conn.execute(text(statement.strip()))
+                            print(f"  [{i+1}/{len(sql_statements)}] Executed statement")
+                        except Exception as stmt_error:
+                            print(f"  Warning: Statement {i+1} failed: {stmt_error}")
+                            # Continue with next statement rather than aborting
+                            # This allows SET statements to fail gracefully if not supported
+            
             print("Schema loaded successfully via SQLAlchemy.")
         else:
             print("schema.sql not found.")

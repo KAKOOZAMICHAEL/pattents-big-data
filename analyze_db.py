@@ -33,46 +33,111 @@ def get_db_connection():
 # DESCRIPTIVE ANALYTICS (1-5)
 # ==========================================
 
-def get_patent_volume_over_time(engine):
+def get_patent_volume_over_time(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    """
+    Get patent volume over time with optional filters.
+    Args:
+        engine: SQLAlchemy engine
+        year_start: Start year (default 2004)
+        year_end: End year (default 2024)
+        countries: List of country codes to filter (optional)
+        cpc_sections: List of CPC sections to filter (optional)
+    """
     query = """
         SELECT
             YEAR(filing_date) AS year,
             CONCAT(YEAR(filing_date), '-', LPAD(MONTH(filing_date), 2, '0'), '-01') AS month,
             COUNT(*) AS count
         FROM patents
-        WHERE filing_date IS NOT NULL AND YEAR(filing_date) BETWEEN 2004 AND 2024
+        WHERE filing_date IS NOT NULL
+          AND YEAR(filing_date) BETWEEN %s AND %s
+    """
+    params = [year_start, year_end]
+
+    if countries:
+        country_placeholders = ", ".join(["%s"] * len(countries))
+        query += f"\n          AND EXISTS ("
+        query += f"\n                SELECT 1 FROM patent_inventors pi"
+        query += f"\n                JOIN inventors i ON pi.inventor_id = i.inventor_id"
+        query += f"\n                WHERE pi.patent_id = patents.patent_id AND i.country IN ({country_placeholders})"
+        query += f"\n            )"
+        params.extend(countries)
+
+    if cpc_sections:
+        cpc_placeholders = ", ".join(["%s"] * len(cpc_sections))
+        query += f"\n          AND cpc_section IN ({cpc_placeholders})"
+        params.extend(cpc_sections)
+
+    query += """
         GROUP BY year, month
         ORDER BY year, month
     """
-    df = pd.read_sql(query, engine)
+    df = pd.read_sql(query, engine, params=params)
     if df.empty:
         return pd.DataFrame(), pd.DataFrame()
-    
+
     df['month'] = pd.to_datetime(df['month'], format='%Y-%m-%d', errors='coerce')
     annual = df.groupby('year', as_index=False)['count'].sum()
     annual['yoy_growth'] = annual['count'].pct_change() * 100
     monthly = df[['month', 'count']]
     return annual, monthly
 
-def get_technology_category_breakdown(engine):
-    query = f"""
+def get_technology_category_breakdown(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    """Get technology breakdown with optional filters."""
+    query = """
         SELECT YEAR(filing_date) as year, cpc_section, COUNT(*) as count
         FROM patents
-        WHERE filing_date IS NOT NULL AND cpc_section != '' AND filing_date BETWEEN '{START_DATE}' AND '{END_DATE}'
+        WHERE filing_date IS NOT NULL
+          AND cpc_section != ''
+          AND YEAR(filing_date) BETWEEN %s AND %s
+    """
+    params = [year_start, year_end]
+
+    if countries:
+        country_placeholders = ", ".join(["%s"] * len(countries))
+        query += f"\n          AND EXISTS ("
+        query += f"\n                SELECT 1 FROM patent_inventors pi"
+        query += f"\n                JOIN inventors i ON pi.inventor_id = i.inventor_id"
+        query += f"\n                WHERE pi.patent_id = patents.patent_id AND i.country IN ({country_placeholders})"
+        query += f"\n            )"
+        params.extend(countries)
+
+    if cpc_sections:
+        cpc_placeholders = ", ".join(["%s"] * len(cpc_sections))
+        query += f"\n          AND cpc_section IN ({cpc_placeholders})"
+        params.extend(cpc_sections)
+
+    query += """
         GROUP BY year, cpc_section
     """
-    return pd.read_sql(query, engine)
+    return pd.read_sql(query, engine, params=params)
 
-def get_top_countries_by_patent_output(engine):
+def get_top_countries_by_patent_output(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    """Get top countries with optional country and CPC filters."""
     query = """
         SELECT i.country, YEAR(p.filing_date) as year, COUNT(DISTINCT p.patent_id) as count
         FROM patents p
         JOIN patent_inventors pi ON p.patent_id = pi.patent_id
         JOIN inventors i ON pi.inventor_id = i.inventor_id
-        WHERE p.filing_date IS NOT NULL AND YEAR(p.filing_date) BETWEEN 2004 AND 2024
+        WHERE p.filing_date IS NOT NULL
+          AND YEAR(p.filing_date) BETWEEN %s AND %s
+    """
+    params = [year_start, year_end]
+
+    if countries:
+        country_placeholders = ", ".join(["%s"] * len(countries))
+        query += f"\n          AND i.country IN ({country_placeholders})"
+        params.extend(countries)
+
+    if cpc_sections:
+        cpc_placeholders = ", ".join(["%s"] * len(cpc_sections))
+        query += f"\n          AND p.cpc_section IN ({cpc_placeholders})"
+        params.extend(cpc_sections)
+
+    query += """
         GROUP BY i.country, year
     """
-    return pd.read_sql(query, engine)
+    return pd.read_sql(query, engine, params=params)
 
 def get_top_companies_market_share(engine):
     query = f"""
@@ -114,31 +179,62 @@ def get_top_inventors_global_ranking(engine):
 # DIAGNOSTIC ANALYTICS (6-10)
 # ==========================================
 
-def get_country_vs_technology_heatmap(engine):
-    query = f"""
+def get_country_vs_technology_heatmap(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    query = """
         SELECT i.country, p.cpc_section, COUNT(DISTINCT p.patent_id) as count
         FROM patents p
         JOIN patent_inventors pi ON p.patent_id = pi.patent_id
         JOIN inventors i ON pi.inventor_id = i.inventor_id
-        WHERE p.cpc_section != '' AND p.filing_date BETWEEN '{START_DATE}' AND '{END_DATE}'
+        WHERE p.cpc_section != ''
+          AND p.filing_date BETWEEN %s AND %s
+    """
+    params = [f"{year_start:04d}-01-01", f"{year_end:04d}-12-31"]
+
+    if countries:
+        country_placeholders = ", ".join(["%s"] * len(countries))
+        query += f"\n          AND i.country IN ({country_placeholders})"
+        params.extend(countries)
+
+    if cpc_sections:
+        cpc_placeholders = ", ".join(["%s"] * len(cpc_sections))
+        query += f"\n          AND p.cpc_section IN ({cpc_placeholders})"
+        params.extend(cpc_sections)
+
+    query += """
         GROUP BY i.country, p.cpc_section
     """
-    df = pd.read_sql(query, engine)
+    df = pd.read_sql(query, engine, params=params)
     if df.empty: return pd.DataFrame()
     top_countries = df.groupby('country')['count'].sum().nlargest(15).index
     df = df[df['country'].isin(top_countries)]
     return df.pivot(index='country', columns='cpc_section', values='count').fillna(0)
 
-def get_patent_lifecycle_analysis(engine):
+def get_patent_lifecycle_analysis(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
     query = """
         SELECT p.cpc_section, i.country, p.patent_id
         FROM patents p
         JOIN patent_inventors pi ON p.patent_id = pi.patent_id
         JOIN inventors i ON pi.inventor_id = i.inventor_id
         WHERE p.cpc_section != ''
-        LIMIT 2500
     """
-    df = pd.read_sql(query, engine)
+    params = []
+
+    if year_start is not None and year_end is not None:
+        query += "\n          AND YEAR(p.filing_date) BETWEEN %s AND %s"
+        params.extend([year_start, year_end])
+
+    if countries:
+        country_placeholders = ", ".join(["%s"] * len(countries))
+        query += f"\n          AND i.country IN ({country_placeholders})"
+        params.extend(countries)
+
+    if cpc_sections:
+        cpc_placeholders = ", ".join(["%s"] * len(cpc_sections))
+        query += f"\n          AND p.cpc_section IN ({cpc_placeholders})"
+        params.extend(cpc_sections)
+
+    query += "\n          LIMIT 2500"
+    df = pd.read_sql(query, engine, params=params)
     if df.empty: return pd.DataFrame()
     np.random.seed(42)
     df['grant_delay_months'] = np.random.normal(loc=24, scale=6, size=len(df))
@@ -172,9 +268,35 @@ def get_inventor_collaboration_network(engine):
     G = nx.from_pandas_edgelist(df, 'inv1', 'inv2')
     return G, df
 
-def get_abstract_nlp_keyword_trends(engine):
-    query = "SELECT YEAR(p.filing_date) as year, a.abstract_text FROM patents p JOIN g_abstract a ON p.patent_id = a.patent_id WHERE a.abstract_text IS NOT NULL LIMIT 1500"
-    df = pd.read_sql(query, engine)
+def get_abstract_nlp_keyword_trends(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    query = """
+        SELECT YEAR(p.filing_date) as year, a.abstract_text
+        FROM patents p
+        JOIN g_abstract a ON p.patent_id = a.patent_id
+        WHERE a.abstract_text IS NOT NULL
+    """
+    params = []
+
+    if year_start is not None and year_end is not None:
+        query += "\n          AND YEAR(p.filing_date) BETWEEN %s AND %s"
+        params.extend([year_start, year_end])
+
+    if countries:
+        country_placeholders = ", ".join(["%s"] * len(countries))
+        query += f"\n          AND EXISTS ("
+        query += f"\n                SELECT 1 FROM patent_inventors pi"
+        query += f"\n                JOIN inventors i ON pi.inventor_id = i.inventor_id"
+        query += f"\n                WHERE pi.patent_id = p.patent_id AND i.country IN ({country_placeholders})"
+        query += f"\n            )"
+        params.extend(countries)
+
+    if cpc_sections:
+        cpc_placeholders = ", ".join(["%s"] * len(cpc_sections))
+        query += f"\n          AND p.cpc_section IN ({cpc_placeholders})"
+        params.extend(cpc_sections)
+
+    query += "\n          LIMIT 1500"
+    df = pd.read_sql(query, engine, params=params)
     if df.empty: return pd.DataFrame()
     
     vectorizer = TfidfVectorizer(stop_words='english', max_features=10)
@@ -196,8 +318,14 @@ def get_abstract_nlp_keyword_trends(engine):
 # COMPARATIVE / SUPERIMPOSED (11-14)
 # ==========================================
 
-def get_gdp_vs_patent_output_correlation(engine):
-    df = get_top_countries_by_patent_output(engine)
+def get_gdp_vs_patent_output_correlation(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    df = get_top_countries_by_patent_output(
+        engine,
+        year_start=year_start,
+        year_end=year_end,
+        countries=countries,
+        cpc_sections=cpc_sections
+    )
     if df.empty: return pd.DataFrame()
     
     agg = df.groupby('country')['count'].sum().reset_index()
@@ -207,8 +335,14 @@ def get_gdp_vs_patent_output_correlation(engine):
     agg.loc[agg['country'] == 'CN', 'gdp_trillions'] = 17.9
     return agg
 
-def get_rd_spending_vs_innovation_output(engine):
-    df = get_top_countries_by_patent_output(engine)
+def get_rd_spending_vs_innovation_output(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    df = get_top_countries_by_patent_output(
+        engine,
+        year_start=year_start,
+        year_end=year_end,
+        countries=countries,
+        cpc_sections=cpc_sections
+    )
     if df.empty: return pd.DataFrame()
     
     agg = df.groupby(['year', 'country'])['count'].sum().reset_index()
@@ -216,7 +350,8 @@ def get_rd_spending_vs_innovation_output(engine):
     agg['rd_spending_pct'] = np.random.uniform(1.0, 5.0, len(agg))
     return agg[agg['country'].isin(['US', 'CN', 'JP', 'DE', 'KR'])]
 
-def get_university_vs_corporate_patent_comparison(engine):
+def get_university_vs_corporate_patent_comparison(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    """Get university vs corporate comparison with year filters."""
     query = """
         SELECT
             YEAR(p.filing_date) as year,
@@ -226,11 +361,30 @@ def get_university_vs_corporate_patent_comparison(engine):
         FROM patents p
         JOIN patent_companies pc ON p.patent_id = pc.patent_id
         JOIN companies c ON pc.company_id = c.company_id
-        WHERE p.filing_date IS NOT NULL AND YEAR(p.filing_date) BETWEEN 2004 AND 2024
+        WHERE p.filing_date IS NOT NULL
+          AND YEAR(p.filing_date) BETWEEN %s AND %s
+    """
+    params = [year_start, year_end]
+
+    if countries:
+        country_placeholders = ", ".join(["%s"] * len(countries))
+        query += f"\n          AND EXISTS ("
+        query += f"\n                SELECT 1 FROM patent_inventors pi"
+        query += f"\n                JOIN inventors i ON pi.inventor_id = i.inventor_id"
+        query += f"\n                WHERE pi.patent_id = p.patent_id AND i.country IN ({country_placeholders})"
+        query += f"\n            )"
+        params.extend(countries)
+
+    if cpc_sections:
+        cpc_placeholders = ", ".join(["%s"] * len(cpc_sections))
+        query += f"\n          AND p.cpc_section IN ({cpc_placeholders})"
+        params.extend(cpc_sections)
+
+    query += """
         GROUP BY year
         ORDER BY year
     """
-    df = pd.read_sql(query, engine)
+    df = pd.read_sql(query, engine, params=params)
     if df.empty: return pd.DataFrame()
 
     return df.melt(
@@ -244,9 +398,34 @@ def get_university_vs_corporate_patent_comparison(engine):
         'government_count': 'Government'
     })
 
-def get_green_technology_patent_surge(engine):
-    query = "SELECT YEAR(filing_date) as year, COUNT(*) as green_count FROM patents WHERE cpc_section = 'Y' AND YEAR(filing_date) BETWEEN 2004 AND 2024 GROUP BY year"
-    df = pd.read_sql(query, engine)
+def get_green_technology_patent_surge(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    """Get green technology patents with year filters."""
+    query = """
+        SELECT YEAR(filing_date) as year, COUNT(*) as green_count
+        FROM patents
+        WHERE cpc_section = 'Y'
+          AND YEAR(filing_date) BETWEEN %s AND %s
+    """
+    params = [year_start, year_end]
+
+    if countries:
+        country_placeholders = ", ".join(["%s"] * len(countries))
+        query += f"\n          AND EXISTS ("
+        query += f"\n                SELECT 1 FROM patent_inventors pi"
+        query += f"\n                JOIN inventors i ON pi.inventor_id = i.inventor_id"
+        query += f"\n                WHERE pi.patent_id = patents.patent_id AND i.country IN ({country_placeholders})"
+        query += f"\n            )"
+        params.extend(countries)
+
+    if cpc_sections:
+        cpc_placeholders = ", ".join(["%s"] * len(cpc_sections))
+        query += f"\n          AND cpc_section IN ({cpc_placeholders})"
+        params.extend(cpc_sections)
+
+    query += """
+        GROUP BY year
+    """
+    df = pd.read_sql(query, engine, params=params)
     if not df.empty:
         df['co2_emissions_mt'] = 28000 + (df['year'] - 2004) * 400
     return df
@@ -255,9 +434,9 @@ def get_green_technology_patent_surge(engine):
 # PREDICTIVE (15-17)
 # ==========================================
 
-def predict_patent_volume_forecasting(engine):
+def predict_patent_volume_forecasting(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
     """15. Forecasting using linear regression for stability."""
-    annual, _ = get_patent_volume_over_time(engine)
+    annual, _ = get_patent_volume_over_time(engine, year_start=year_start, year_end=year_end, countries=countries, cpc_sections=cpc_sections)
     if annual.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -275,8 +454,14 @@ def predict_patent_volume_forecasting(engine):
 
     return annual, future_df
 
-def predict_technology_sector_growth(engine):
-    df = get_technology_category_breakdown(engine)
+def predict_technology_sector_growth(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    df = get_technology_category_breakdown(
+        engine,
+        year_start=year_start,
+        year_end=year_end,
+        countries=countries,
+        cpc_sections=cpc_sections
+    )
     if df.empty: return pd.DataFrame()
     
     results = []
@@ -293,8 +478,14 @@ def predict_technology_sector_growth(engine):
         
     return pd.DataFrame(results).sort_values('predicted_3yr_growth_pct', ascending=False)
 
-def cluster_country_innovation_trajectory(engine):
-    df = get_top_countries_by_patent_output(engine)
+def cluster_country_innovation_trajectory(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    df = get_top_countries_by_patent_output(
+        engine,
+        year_start=year_start,
+        year_end=year_end,
+        countries=countries,
+        cpc_sections=cpc_sections
+    )
     if df.empty: return pd.DataFrame()
     
     pivot = df.pivot(index='country', columns='year', values='count').fillna(0)
@@ -359,8 +550,14 @@ def predict_patent_citation_impact(engine):
     df.loc[df['cpc_section'].isin(['G', 'H']), 'predicted_citations_5yr'] += 4
     return df
 
-def detect_anomalies_patent_surge(engine):
-    _, monthly = get_patent_volume_over_time(engine)
+def detect_anomalies_patent_surge(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
+    _, monthly = get_patent_volume_over_time(
+        engine,
+        year_start=year_start,
+        year_end=year_end,
+        countries=countries,
+        cpc_sections=cpc_sections
+    )
     if monthly.empty: return pd.DataFrame()
     
     X = monthly['count'].values.reshape(-1, 1)
