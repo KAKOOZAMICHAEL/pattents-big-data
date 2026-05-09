@@ -86,3 +86,42 @@ CREATE TABLE IF NOT EXISTS g_abstract (
 );
 
 CREATE INDEX IF NOT EXISTS idx_g_abstract_patent_id ON g_abstract (patent_id);
+
+-- ------------------------------------------------------------
+-- 7. patent_yearly_summary
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS patent_yearly_summary (
+    year INT NOT NULL,
+    cpc_section VARCHAR(10) NOT NULL,
+    country VARCHAR(100) NOT NULL,
+    count INT NOT NULL,
+    PRIMARY KEY (year, cpc_section, country)
+);
+
+CREATE INDEX IF NOT EXISTS idx_patent_yearly_summary_year ON patent_yearly_summary (year);
+CREATE INDEX IF NOT EXISTS idx_patent_yearly_summary_country ON patent_yearly_summary (country);
+CREATE INDEX IF NOT EXISTS idx_patent_yearly_summary_cpc ON patent_yearly_summary (cpc_section);
+
+-- ------------------------------------------------------------
+-- 8. company_yearly_summary
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS company_yearly_summary (
+    year INT NOT NULL,
+    company_id VARCHAR(64) NOT NULL,
+    count INT NOT NULL,
+    type VARCHAR(50) NOT NULL,
+    PRIMARY KEY (year, company_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_yearly_summary_company_id ON company_yearly_summary (company_id);
+CREATE INDEX IF NOT EXISTS idx_company_yearly_summary_type ON company_yearly_summary (type);
+
+-- ------------------------------------------------------------
+-- 9. monthly_volume_summary
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS monthly_volume_summary (
+    month DATE PRIMARY KEY,
+    count INT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_monthly_volume_summary_month ON monthly_volume_summary (month);

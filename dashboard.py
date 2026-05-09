@@ -4,8 +4,6 @@ import numpy as np
 import analyze_db
 import plotly.express as px
 import plotly.graph_objects as go
-import random
-import time
 from sqlalchemy import create_engine
 
 st.set_page_config(page_title="Patent Intelligence Dashboard", layout="wide", initial_sidebar_state="expanded")
@@ -319,7 +317,7 @@ with tabs[4]:
     
     c1, c2 = st.columns([1, 1])
     with c1:
-        st.subheader("18. Abstract Text Classification (DistilBERT)")
+        st.subheader("18. Abstract Text Classification")
         cm, acc = analyze_db.classify_abstract_distilbert(engine)
         if not cm.empty:
             st.success(f"**Model Accuracy:** {acc*100:.1f}%")
@@ -347,25 +345,18 @@ with tabs[4]:
             st.plotly_chart(fig, use_container_width=True)
             
     st.markdown("---")
-    st.subheader("Live DistilBERT Abstract Classification")
-    st.write("Paste a patent abstract below to get a real-time deep learning prediction of its CPC Technology Sector.")
+    st.subheader("Live Abstract Classification")
+    st.write("Paste a patent abstract below to get a real-time prediction of its CPC Technology Sector.")
     
     user_abstract = st.text_area("Patent Abstract", height=150, placeholder="Example: A machine learning system for autonomous vehicle navigation comprising neural networks...")
     if st.button("Predict Technology Sector"):
         if user_abstract.strip():
-            with st.spinner("Running DistilBERT inference..."):
-                time.sleep(1.5)
-                lower_text = user_abstract.lower()
-                if any(w in lower_text for w in ['compute', 'network', 'machine', 'data', 'electronic']):
-                    pred = 'G - Physics / H - Electricity'
-                elif any(w in lower_text for w in ['chemical', 'molecule', 'acid', 'compound']):
-                    pred = 'C - Chemistry'
-                elif any(w in lower_text for w in ['vehicle', 'engine', 'wheel', 'motor']):
-                    pred = 'B - Performing Operations / Transporting'
-                else:
-                    pred = random.choice(['A - Human Necessities', 'D - Textiles', 'E - Fixed Constructions'])
-                
+            with st.spinner("Running classification model..."):
+                pred, confidence = analyze_db.live_predict_abstract(user_abstract)
+            if pred is None:
+                st.error("Prediction model is unavailable or could not be loaded.")
+            else:
                 st.success(f"**Predicted Category:** {pred}")
-                st.progress(random.uniform(0.75, 0.99), text="Confidence Score")
+                st.info(f"**Confidence:** {confidence*100:.1f}%")
         else:
             st.warning("Please enter an abstract to classify.")

@@ -1,18 +1,19 @@
-import pandas as pd
-import numpy as np
 import os
-from sqlalchemy import create_engine
+from pathlib import Path
 
-# ML & NLP imports
-from sklearn.linear_model import LinearRegression
+import joblib
+import numpy as np
+import pandas as pd
+from sqlalchemy import create_engine
+from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.cluster import KMeans
 from sklearn.neural_network import MLPRegressor
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import confusion_matrix, accuracy_score
 import networkx as nx
-
-# Constraints: Transformers
-from transformers import pipeline
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -35,7 +36,7 @@ def get_db_connection():
 
 def get_patent_volume_over_time(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
     """
-    Get patent volume over time with optional filters.
+    Get patent volume over time with optional filters using pre-aggregated summary tables.
     Args:
         engine: SQLAlchemy engine
         year_start: Start year (default 2004)
@@ -44,24 +45,18 @@ def get_patent_volume_over_time(engine, year_start=2004, year_end=2024, countrie
         cpc_sections: List of CPC sections to filter (optional)
     """
     query = """
-        SELECT
-            YEAR(filing_date) AS year,
-            CONCAT(YEAR(filing_date), '-', LPAD(MONTH(filing_date), 2, '0'), '-01') AS month,
-            COUNT(*) AS count
-        FROM patents
-        WHERE filing_date IS NOT NULL
-          AND YEAR(filing_date) BETWEEN %s AND %s
+        SELECT year, SUM(count) AS count
+        FROM patent_yearly_summary
+        WHERE year BETWEEN %s AND %s
     """
     params = [year_start, year_end]
 
     if countries:
         country_placeholders = ", ".join(["%s"] * len(countries))
-        query += f"\n          AND EXISTS ("
-        query += f"\n                SELECT 1 FROM patent_inventors pi"
-        query += f"\n                JOIN inventors i ON pi.inventor_id = i.inventor_id"
-        query += f"\n                WHERE pi.patent_id = patents.patent_id AND i.country IN ({country_placeholders})"
-        query += f"\n            )"
+        query += f"\n          AND country IN ({country_placeholders})"
         params.extend(countries)
+    else:
+        query += "\n          AND country = 'ALL'"
 
     if cpc_sections:
         cpc_placeholders = ", ".join(["%s"] * len(cpc_sections))
@@ -69,38 +64,45 @@ def get_patent_volume_over_time(engine, year_start=2004, year_end=2024, countrie
         params.extend(cpc_sections)
 
     query += """
-        GROUP BY year, month
-        ORDER BY year, month
+        GROUP BY year
+        ORDER BY year
     """
-    df = pd.read_sql(query, engine, params=params)
-    if df.empty:
+    annual = pd.read_sql(query, engine, params=params)
+    if annual.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    df['month'] = pd.to_datetime(df['month'], format='%Y-%m-%d', errors='coerce')
-    annual = df.groupby('year', as_index=False)['count'].sum()
     annual['yoy_growth'] = annual['count'].pct_change() * 100
-    monthly = df[['month', 'count']]
+
+    monthly = pd.DataFrame()
+    if not countries and not cpc_sections:
+        monthly_query = """
+            SELECT month, count
+            FROM monthly_volume_summary
+            WHERE month BETWEEN %s AND %s
+            ORDER BY month
+        """
+        monthly = pd.read_sql(monthly_query, engine, params=[f"{year_start}-01-01", f"{year_end}-12-31"])
+        if not monthly.empty:
+            monthly['month'] = pd.to_datetime(monthly['month'], format='%Y-%m-%d', errors='coerce')
+
     return annual, monthly
 
 def get_technology_category_breakdown(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
-    """Get technology breakdown with optional filters."""
+    """Get technology breakdown with optional filters using summary data."""
     query = """
-        SELECT YEAR(filing_date) as year, cpc_section, COUNT(*) as count
-        FROM patents
-        WHERE filing_date IS NOT NULL
+        SELECT year, cpc_section, SUM(count) as count
+        FROM patent_yearly_summary
+        WHERE year BETWEEN %s AND %s
           AND cpc_section != ''
-          AND YEAR(filing_date) BETWEEN %s AND %s
     """
     params = [year_start, year_end]
 
     if countries:
         country_placeholders = ", ".join(["%s"] * len(countries))
-        query += f"\n          AND EXISTS ("
-        query += f"\n                SELECT 1 FROM patent_inventors pi"
-        query += f"\n                JOIN inventors i ON pi.inventor_id = i.inventor_id"
-        query += f"\n                WHERE pi.patent_id = patents.patent_id AND i.country IN ({country_placeholders})"
-        query += f"\n            )"
+        query += f"\n          AND country IN ({country_placeholders})"
         params.extend(countries)
+    else:
+        query += "\n          AND country = 'ALL'"
 
     if cpc_sections:
         cpc_placeholders = ", ".join(["%s"] * len(cpc_sections))
@@ -244,12 +246,12 @@ def get_patent_lifecycle_analysis(engine, year_start=2004, year_end=2024, countr
 
 def get_company_vs_country_superimposed_trends(engine):
     query = """
-        SELECT YEAR(p.filing_date) as year, i.country, COUNT(DISTINCT p.patent_id) as count
-        FROM patents p
-        JOIN patent_inventors pi ON p.patent_id = pi.patent_id
-        JOIN inventors i ON pi.inventor_id = i.inventor_id
-        WHERE i.country IN ('US', 'CN') AND YEAR(p.filing_date) BETWEEN 2004 AND 2024
-        GROUP BY year, i.country
+        SELECT year, country, SUM(count) as count
+        FROM patent_yearly_summary
+        WHERE country IN ('US', 'CN')
+          AND year BETWEEN 2004 AND 2024
+        GROUP BY year, country
+        ORDER BY year
     """
     df = pd.read_sql(query, engine)
     if df.empty: return pd.DataFrame()
@@ -509,37 +511,108 @@ def cluster_country_innovation_trajectory(engine, year_start=2004, year_end=2024
 # DEEP LEARNING (18-20)
 # ==========================================
 
+MODEL_DIR = Path(__file__).resolve().parent / "outputs"
+MODEL_PATH = MODEL_DIR / "abstract_classifier.pkl"
+
+
+def _prepare_abstract_training_data(engine, sample_size=5000):
+    query = (
+        "SELECT p.cpc_section, a.abstract_text "
+        "FROM patents p JOIN g_abstract a ON p.patent_id = a.patent_id "
+        "WHERE p.cpc_section != '' AND a.abstract_text IS NOT NULL "
+        "LIMIT %s"
+    )
+    df = pd.read_sql(query, engine, params=[sample_size])
+    if df.empty:
+        return pd.DataFrame()
+    df = df.dropna(subset=['cpc_section', 'abstract_text'])
+    df = df[df['abstract_text'].astype(str).str.strip() != '']
+    return df
+
+
+def _train_and_save_abstract_classifier(engine):
+    df = _prepare_abstract_training_data(engine, sample_size=5000)
+    if df.empty:
+        raise ValueError('No training abstracts available for classification.')
+
+    X = df['abstract_text'].astype(str)
+    y = df['cpc_section'].astype(str)
+
+    stratify = y if y.value_counts().min() >= 2 else None
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=stratify
+    )
+
+    model = Pipeline([
+        ('tfidf', TfidfVectorizer(stop_words='english', max_features=10000)),
+        ('clf', LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced'))
+    ])
+    model.fit(X_train, y_train)
+
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, MODEL_PATH)
+
+    labels = model.named_steps['clf'].classes_
+    y_pred = model.predict(X_test)
+    cm = confusion_matrix(y_test, y_pred, labels=labels)
+    cm_df = pd.DataFrame(cm, index=labels, columns=labels)
+    accuracy = accuracy_score(y_test, y_pred)
+    return model, cm_df, accuracy
+
+
+def _load_abstract_classifier():
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError('Abstract classifier model file not found.')
+    return joblib.load(MODEL_PATH)
+
+
 def classify_abstract_distilbert(engine):
-    """18. Simulated Confusion matrix for DistilBERT fine-tuning."""
-    query = "SELECT p.cpc_section, a.abstract_text FROM patents p JOIN g_abstract a ON p.patent_id = a.patent_id LIMIT 50"
-    df = pd.read_sql(query, engine)
-    if df.empty: return pd.DataFrame(), 0.0
-    
-    classes = ['A', 'B', 'C', 'G', 'H']
-    cm = pd.DataFrame(np.random.randint(10, 100, size=(5, 5)), index=classes, columns=classes)
-    accuracy = 0.87
-    return cm, accuracy
+    """18. Abstract classification confusion matrix using TF-IDF + LogisticRegression."""
+    try:
+        if not MODEL_PATH.exists():
+            _, cm_df, acc = _train_and_save_abstract_classifier(engine)
+            return cm_df, acc
+
+        model = _load_abstract_classifier()
+        df = _prepare_abstract_training_data(engine, sample_size=5000)
+        if df.empty:
+            return pd.DataFrame(), 0.0
+
+        X = df['abstract_text'].astype(str)
+        y = df['cpc_section'].astype(str)
+        stratify = y if y.value_counts().min() >= 2 else None
+        _, X_test, _, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=stratify
+        )
+
+        y_pred = model.predict(X_test)
+        labels = model.named_steps['clf'].classes_
+        cm = confusion_matrix(y_test, y_pred, labels=labels)
+        cm_df = pd.DataFrame(cm, index=labels, columns=labels)
+        accuracy = accuracy_score(y_test, y_pred)
+        return cm_df, accuracy
+    except Exception:
+        return pd.DataFrame(), 0.0
+
 
 def live_predict_abstract(text):
-    """Live abstract prediction using DistilBERT via huggingface transformers."""
+    """Live abstract prediction using a saved TF-IDF + LogisticRegression classifier."""
+    if not text or not str(text).strip():
+        return None, 0.0
+
+    if not MODEL_PATH.exists():
+        try:
+            _train_and_save_abstract_classifier(get_db_connection())
+        except Exception:
+            return None, 0.0
+
     try:
-        # Load the feature extractor as a lightweight proxy for a heavy classifier
-        # to ensure it runs on an 8GB RAM laptop without downloading a 2GB model every load
-        extractor = pipeline('feature-extraction', model='distilbert-base-uncased', framework='pt')
-        features = extractor(text[:256]) # limit to avoid memory spikes
-        
-        # We classify based on deterministic logic to guarantee good outputs for the user
-        lower_text = text.lower()
-        if any(w in lower_text for w in ['compute', 'network', 'machine', 'data', 'electronic']):
-            return 'G - Physics / H - Electricity'
-        elif any(w in lower_text for w in ['chemical', 'molecule', 'acid', 'compound']):
-            return 'C - Chemistry'
-        elif any(w in lower_text for w in ['vehicle', 'engine', 'wheel', 'motor']):
-            return 'B - Performing Operations / Transporting'
-        else:
-            return 'A - Human Necessities'
-    except Exception as e:
-        return f"Error running BERT model: {e}"
+        model = _load_abstract_classifier()
+        pred = model.predict([text])[0]
+        proba = model.predict_proba([text])[0].max()
+        return pred, float(proba)
+    except Exception:
+        return None, 0.0
 
 def predict_patent_citation_impact(engine):
     query = "SELECT patent_id, filing_date, cpc_section FROM patents LIMIT 100"
@@ -551,22 +624,23 @@ def predict_patent_citation_impact(engine):
     return df
 
 def detect_anomalies_patent_surge(engine, year_start=2004, year_end=2024, countries=None, cpc_sections=None):
-    _, monthly = get_patent_volume_over_time(
-        engine,
-        year_start=year_start,
-        year_end=year_end,
-        countries=countries,
-        cpc_sections=cpc_sections
-    )
+    query = """
+        SELECT month, count
+        FROM monthly_volume_summary
+        WHERE month BETWEEN %s AND %s
+        ORDER BY month
+    """
+    monthly = pd.read_sql(query, engine, params=[f"{year_start}-01-01", f"{year_end}-12-31"])
     if monthly.empty: return pd.DataFrame()
-    
+
+    monthly['month'] = pd.to_datetime(monthly['month'], format='%Y-%m-%d', errors='coerce')
     X = monthly['count'].values.reshape(-1, 1)
     autoencoder = MLPRegressor(hidden_layer_sizes=(2, 2), max_iter=500, random_state=42)
     autoencoder.fit(X, X)
-    
+
     preds = autoencoder.predict(X)
     mse = np.abs(X.flatten() - preds)
-    
+
     monthly['anomaly_score'] = mse
     threshold = np.percentile(mse, 95)
     monthly['is_anomaly'] = monthly['anomaly_score'] > threshold

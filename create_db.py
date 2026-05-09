@@ -1,8 +1,16 @@
 import os
+import sys
 from sqlalchemy import create_engine, text
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
+
+def local_socket_param(host):
+    socket_path = os.getenv("PATENTS_DB_SOCKET", "/run/mysqld/mysqld.sock")
+    if host in ("localhost", "127.0.0.1") and Path(socket_path).exists():
+        return f"?unix_socket={socket_path}"
+    return ""
+
 
 def main():
     host = os.getenv("PATENTS_DB_HOST", "localhost")
@@ -13,14 +21,15 @@ def main():
     print(f"Connecting to MySQL server at {host}...")
     try:
         # Connect without DB to create it
-        engine_no_db = create_engine(f"mysql+pymysql://{user}:{password}@{host}/")
+        socket_param = local_socket_param(host)
+        engine_no_db = create_engine(f"mysql+pymysql://{user}:{password}@{host}/{socket_param}")
         with engine_no_db.connect() as conn:
             conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {db_name}"))
         
         print(f"Database '{db_name}' ready.")
         
         # Connect to the DB to run schema.sql
-        engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}/{db_name}")
+        engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}/{db_name}{socket_param}")
         
         schema_path = BASE_DIR / "schema.sql"
         if schema_path.exists():
@@ -60,6 +69,7 @@ def main():
             print("schema.sql not found.")
     except Exception as e:
         print(f"Failed to create database or tables: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
